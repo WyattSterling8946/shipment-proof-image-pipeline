@@ -1,0 +1,21 @@
+{
+  "name": "shipment-proof-image-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/pod_intake.ts",
+    "start": "tsx src/pod_intake.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/shipment_event.test.ts",
+    "submit:sample": "tsx scripts/submit_delivery.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

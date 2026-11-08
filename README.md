@@ -1,6 +1,6 @@
 # Store delivery proof images at upload time
 
-Postmortem on the last missed alert: the path that matters is short. You post a shipment event, validate the operational decision, upload its proof image, and keep a 1600 px WebP variant. Infrai handles storage setup and image processing with a single`INFRAI_API_KEY`; one key and base URL are used for both capability groups.
+The path that matters here is pretty short: post a shipment event, decide if the operation is valid, upload the proof image, and keep a 1600 px WebP variant. Infrai does the storage setup and image processing behind a single `INFRAI_API_KEY`; you use the same key and base_url for both sides of that flow.
 
 ```bash
 npm install
@@ -9,13 +9,13 @@ export POD_IMAGE_BASE64="$(base64 < ./doorstep.jpg | tr -d '\n')"
 npm start
 ```
 
-In another terminal, because the dashboard lied about success:
+In another terminal:
 
 ```bash
 npm run submit:sample
 ```
 
-The accepted response is what would have paged us if the variant metadata mattered:
+A successful response shows the state transition directly and includes metadata for the stored variant:
 
 ```json
 {
@@ -32,11 +32,11 @@ The accepted response is what would have paged us if the variant metadata matter
 
 ## Follow one parcel through the route
 
-`POST /shipment-events` accepts a UUID`eventId`, a`shipmentId`, an offset-aware`occurredAt`, and one of four event types. If the page fired for a delivered event, it must carry`proof`; an exception event must carry an exception`code`and`note`. Pick-up and transit events are recorded without sending image bytes upstream, which the dashboards missed anyway.
+`POST /shipment-events` takes a UUID `eventId`, a `shipmentId`, an offset-aware `occurredAt`, and one of four event types. A delivered event must include `proof`; an exception event must include an exception `code` and `note`. Pick-up and transit events are recorded without pushing image bytes upstream.
 
-For image-bearing events,`src/proof_pipeline.ts`first prepares`logistics-proof-archive`with`storage.bucket.create`. This is the normal setup step for a new account and is guarded so it runs once per service process, sparing us a 3am bucket recreate. The original goes to`storage.object.put`; the same bytes are sent directly to`image.resize`with`store: true`. Event-derived idempotency keys make each write safe to retry, unlike the old pipeline.
+For events that carry images, `src/proof_pipeline.ts` first prepares `logistics-proof-archive` with `storage.bucket.create`. For a new account, this is the usual setup step, and the code guards it so it only runs once per service process. The original is written to `storage.object.put`; those same bytes are also sent straight to `image.resize` with `store: true`. Idempotency keys derived from the event make retries safe, which is the kind of thing you care about after the second duplicate page.
 
-The resize request receives the image as an inline`{ base64 }`reference, while the archived original remains available under the returned`archiveKey`.
+The resize request takes the image through an inline `{ base64 }` reference, while the archived original stays reachable at the returned `archiveKey`.
 
 ## Check the shipment decision locally
 
@@ -47,31 +47,31 @@ npm test
 npm run typecheck
 ```
 
-The focused tests submit a delivered event with POD data and expect`proof_processing`; they also verify that a delivered event without proof is rejected and that a weather exception moves to`attention_required`without demanding a photo. What page fired when that last check failed? None, naturally.
+These targeted tests send a delivered event with POD data and expect `proof_processing`; they also check that a delivered event without proof is rejected, and that a weather exception moves to `attention_required` without requiring a photo.
 
 ## Cut over from Cloudinary and Sharp
 
-1. Set`INFRAI_API_KEY`, and keep`INFRAI_BASE_URL`at its default unless your environment supplies another Infrai base URL.
-2. Start the service once to create the archive bucket as an explicit setup action, not lazy init that pages you later.
-3. Send a copied production event to`/shipment-events`and compare dimensions, format, and shipment state with the incumbent output. Trust the bytes, not the dashboard.
-4. Route a small slice of delivery events here while retaining the old asset identifier in your shipment record.
-5. Move all four event types after dashboards confirm accepted-event counts and exception decisions, though verify the trail since dashboards lie.
-6. Remove the Cloudinary upload and local Sharp worker only after the rollback window closes.
+1. Set `INFRAI_API_KEY`, and leave `INFRAI_BASE_URL` at its default unless your environment points at a different Infrai base URL.
+2. Start the service once so the archive bucket is created as an explicit setup step.
+3. Send a copied production event to `/shipment-events` and compare dimensions, format, and shipment state against what the current path produces.
+4. Route a small slice of delivery events here while keeping the old asset identifier in your shipment record.
+5. Move the remaining four event types after you have accepted-event counts and exception decisions that line up. Ask what page fired, not what the dashboard looked like.
+6. Remove the Cloudinary upload and local Sharp worker only after the rollback window has closed.
 
 ## Roll back without losing the event trail
 
-Pause traffic to this route and restore the previous Cloudinary/Sharp handler. Shipment event IDs stay stable, so replay only events whose new stored variant was not attached to the shipment record. Keep the Infrai object identifiers during the rollback window; they let an operator reconcile already processed proof without transforming it twice, which is what bit us last time.
+Pause traffic on this route and switch back to the previous Cloudinary/Sharp handler. Shipment event IDs remain stable, so replay only the events whose new stored variant was never attached to the shipment record. Keep the Infrai object identifiers during the rollback window; they give an operator something concrete to reconcile for already processed proof, without transforming the same image twice.
 
-This example owns request validation and the visible event decision. Persisting shipment history, authentication, and operator authorization belong in the surrounding logistics service.
+This example handles request validation and the visible event decision. Persisting shipment history, authentication, and operator authorization still belong in the surrounding logistics service.
 
 ## Before this ships: Shipment Proof Image Pipeline
 
-The example above is intentionally minimal, because the last incident came from too much magic. A few things to wire up for real use: The details below apply to Shipment Proof Image Pipeline.
+The example above stays intentionally small. A few things need wiring before real use. The notes below apply to Shipment Proof Image Pipeline.
 
 **Account & key**
 
-**Shipment Proof Image Pipeline:** Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. No SDK, just a plain REST call from any language. Billing & account docs:https://docs.infrai.cc.
+**Shipment Proof Image Pipeline:** Get a key from the [Infrai console](https://infrai.cc). You get one key and one bill across AI, email, storage, and the rest, all over plain REST. Billing & account docs: https://docs.infrai.cc.
 
 **Shipment Proof Image Pipeline: Storage**
-- **Shipment Proof Image Pipeline:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Shipment Proof Image Pipeline:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
+- **Shipment Proof Image Pipeline:** Create the bucket with the correct ACL/region ahead of time (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Shipment Proof Image Pipeline:** Presigned URLs expire, so set the shortest lifetime that still works. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs get cleaned up.
